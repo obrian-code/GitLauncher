@@ -22,6 +22,27 @@ CONVENTIONAL_TYPES = [
     "chore", "perf", "ci", "build", "revert", "BREAKING CHANGE"
 ]
 
+APP_TITLE = "Git Auto CLI"
+PRIMARY = "bold cyan"
+SUCCESS = "bold green"
+WARNING = "bold yellow"
+ERROR = "bold red"
+
+def header(text):
+    console.print(Panel.fit(text, style=PRIMARY))
+
+def success(msg):
+    console.print(f"[{{SUCCESS}}]✔ {{msg}}[/{{SUCCESS}}]")
+
+def warn(msg):
+    console.print(f"[{{WARNING}}]⚠ {{msg}}[/{{WARNING}}]")
+
+def error(msg):
+    console.print(f"[{{ERROR}}]✖ {{msg}}[/{{ERROR}}]")
+
+def divider():
+    console.rule(style="grey50")
+
 # ==============================
 # Credenciales cifradas
 # ==============================
@@ -109,7 +130,7 @@ def choose_project():
         console.print("[yellow]No hay proyectos guardados[/yellow]")
         return None
 
-    console.print("\n[bold cyan]Proyectos guardados:[/bold cyan]")
+    console.print(Panel("[bold green]Proyectos guardados:[/bold green]"))
 
     for i, p in enumerate(projects, 1):
         console.print(f"[green]{i}[/green] → {p}")
@@ -155,7 +176,7 @@ def init_git(project_path):
 # ==============================
 def commit_changes(cwd):
     if not has_changes(cwd):
-        console.print("[green]No hay cambios[/green]")
+        console.print("[bold yellow]Error:[/bold yellow] [red]No hay cambios para hacer commit.[/red]")
         return
 
     run(["git", "add", "."], cwd=cwd)
@@ -320,7 +341,8 @@ def setup_git():
 # Main
 # ==============================
 def main():
-    console.print(Panel.fit("🚀 Git Auto CLI"))
+    console.print("[bold magenta]🚀 Git Auto CLI - Bienvenido![/bold magenta]")
+    console.print("[cyan]Por favor, elige una opción del menú a continuación:[/cyan]")
 
     # Elegir proyecto guardado
     project_path = choose_project()
@@ -336,10 +358,10 @@ def main():
 
     while True:
         console.print(Panel.fit(
-            "1 Commit cambios\n"
-            "2 Gestionar ramas\n"
-            "3 Gestionar commits\n"
-            "0 Salir"
+            "[bold cyan]1 Commit cambios[/bold cyan]\n"
+            "[bold cyan]2 Gestionar ramas[/bold cyan]\n"
+            "[bold cyan]3 Gestionar commits[/bold cyan]\n"
+            "[bold red]0 Salir[/bold red]"
         ))
 
         opt = Prompt.ask("Opción")
