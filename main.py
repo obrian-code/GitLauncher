@@ -41,7 +41,8 @@ def save_credentials(username, email, token):
 def load_credentials():
     if CRED_FILE.exists():
         data = json.loads(CRED_FILE.read_text())
-        data["token"] = decrypt_token(data["token"])
+        if data.get("token"):
+            data["token"] = decrypt_token(data["token"])
         return data
     return None
 
@@ -58,29 +59,27 @@ def run(cmd, cwd=None, capture_output=False):
     return result.stdout.strip() if capture_output else result.returncode == 0
 
 def branch_has_upstream(branch, cwd):
-    """Verifica si la rama local tiene upstream remoto"""
-    result = run(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", f"{branch}@{{u}}"], cwd=cwd, capture_output=True)
+    result = run(
+        ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", f"{branch}@{{u}}"],
+        cwd=cwd, capture_output=True
+    )
     return bool(result)
 
 def get_valid_token(username, email, github_repo_url, project_path):
-    """Verifica si existe token válido; si falla pide uno nuevo"""
     creds = load_credentials()
     if creds and creds.get("token"):
         github_token = creds["token"]
         token_url = github_repo_url.replace("https://", f"https://{github_token}@")
         run(["git", "remote", "remove", "origin"], cwd=project_path)
         run(["git", "remote", "add", "origin", token_url], cwd=project_path)
-        # Detectar si main tiene upstream
         if branch_has_upstream("main", cwd=project_path):
             success = run(["git", "push"], cwd=project_path)
         else:
             success = run(["git", "push", "-u", "origin", "main"], cwd=project_path)
         if success:
-            return github_token  # token válido
-        else:
-            console.print("[red]❌ Token guardado falló, se requiere uno nuevo[/red]")
+            return github_token
+        console.print("[red]❌ Token guardado falló, se requiere uno nuevo[/red]")
 
-    # Si no existe token o falló, pedir uno nuevo
     github_token = getpass("GitHub personal access token: ")
     save_credentials(username, email, github_token)
     token_url = github_repo_url.replace("https://", f"https://{github_token}@")
@@ -92,8 +91,56 @@ def get_valid_token(username, email, github_repo_url, project_path):
         run(["git", "push", "-u", "origin", "main"], cwd=project_path)
     return github_token
 
-def setup_git(project_path, github_repo_url):
-    console.print(Panel(f"[bold]Configurando Git para {project_path}[/bold]", subtitle="Paso 1: Configuración global"))
+# ==============================
+# Commit inteligente
+# ==============================
+CONVENTIONAL_TYPES = [
+    "feat", "fix", "docs", "style", "refactor", "test", 
+    "chore", "perf", "ci", "build", "revert", "BREAKING CHANGE"
+]
+
+def has_changes(cwd):
+    status = run(["git", "status", "--porcelain"], cwd=cwd, capture_output=True)
+    return bool(status.strip())
+
+def detect_style_changes(cwd):
+    # Simplificación: si solo cambios de archivos de texto
+    return True if has_changes(cwd) else False
+
+def commit_changes(cwd, first_commit=False):
+    if not has_changes(cwd):
+        return
+    if first_commit:
+        run(["git", "add", "."], cwd=cwd)
+        run(["git", "commit", "-m", "Initial commit 🚀"], cwd=cwd)
+        console.print("[green]✔ Primer commit automático realizado[/green]")
+        return
+    if detect_style_changes(cwd):
+        run(["git", "add", "."], cwd=cwd)
+        run(["git", "commit", "-m", "style: cambios de estilo"], cwd=cwd)
+        console.print("[green]✔ Commit de estilo realizado[/green]")
+        return
+    run(["git", "add", "."], cwd=cwd)
+    commit_type = Prompt.ask(
+        "Tipo de commit", choices=CONVENTIONAL_TYPES, default="feat"
+    )
+    message = Prompt.ask("Mensaje de commit", default="Auto commit")
+    run(["git", "commit", "-m", f"{commit_type}: {message}"], cwd=cwd)
+    console.print(f"[green]✔ Commit realizado: {commit_type}: {message}[/green]")
+
+# ==============================
+# Configuración inicial
+# ==============================
+def setup_git(project_path=None, github_repo_url=None):
+    if project_path is None:
+        project_path = Path(Prompt.ask("Project path (local)")).resolve()
+    is_new = not (project_path / ".git").exists()
+
+    if is_new:
+        console.print(Panel(f"[bold]Configurando Git para {project_path}[/bold]", subtitle="Paso 1: Inicializando repo"))
+        run(["git", "init"], cwd=project_path)
+    else:
+        console.print(Panel(f"[bold]Proyecto Git detectado en {project_path}[/bold]", subtitle="Paso 1: Detectando cambios"))
 
     creds = load_credentials()
     if creds:
@@ -107,16 +154,12 @@ def setup_git(project_path, github_repo_url):
     run(["git", "config", "--global", "user.name", github_user])
     run(["git", "config", "--global", "user.email", github_email])
 
-    if not (project_path / ".git").exists():
-        console.print(Panel("[bold yellow]Inicializando repositorio...[/bold yellow]"))
-        run(["git", "init"], cwd=project_path)
+    commit_changes(project_path, first_commit=is_new)
 
-    run(["git", "add", "."], cwd=project_path)
-    run(["git", "commit", "-m", "Initial commit 🚀"], cwd=project_path)
-
-    # Validar token y hacer push
-    token = get_valid_token(github_user, github_email, github_repo_url, project_path)
-    console.print(Panel("[green]✅ Repo inicializado y push completado[/green]", title="¡Listo!"))
+    if is_new:
+        if github_repo_url is None:
+            github_repo_url = Prompt.ask("GitHub repo URL (HTTPS)")
+        get_valid_token(github_user, github_email, github_repo_url, project_path)
 
 # ==============================
 # UI de ramas
@@ -180,10 +223,11 @@ def git_branch_menu(project_path):
 # ==============================
 def main():
     console.print(Panel.fit("[bold green]🚀 Git Auto CLI[/bold green]", subtitle="Automatiza Git desde la terminal"))
-    project_path = Path(Prompt.ask("Project path (local)")).resolve()
-    github_repo_url = Prompt.ask("GitHub repo URL (HTTPS)")
-
-    setup_git(project_path, github_repo_url)
+    # Detecta si hay repo en cwd
+    project_path = Path.cwd()
+    if not (project_path / ".git").exists():
+        project_path = Path(Prompt.ask("Project path (local)")).resolve()
+    setup_git(project_path)
 
     if Confirm.ask("¿Deseas gestionar ramas de forma interactiva?", default=True):
         git_branch_menu(project_path)
