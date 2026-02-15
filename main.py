@@ -13,6 +13,11 @@ console = Console()
 CRED_FILE = Path.home() / ".git_auto_cli.json"
 KEY_FILE = Path.home() / ".git_auto_cli.key"
 
+CONVENTIONAL_TYPES = [
+    "feat", "fix", "docs", "style", "refactor", "test",
+    "chore", "perf", "ci", "build", "revert", "BREAKING CHANGE"
+]
+
 # ==============================
 # Manejo de credenciales cifradas
 # ==============================
@@ -34,7 +39,7 @@ def decrypt_token(enc_token):
     return f.decrypt(enc_token.encode()).decode()
 
 def save_credentials(username, email, token):
-    data = {"username": username, "email": email, "token": encrypt_token(token)}
+    data = {"username": username, "email": email, "token": encrypt_token(token) if token else ""}
     CRED_FILE.write_text(json.dumps(data))
     console.print(f"[green]✔ Credenciales guardadas en {CRED_FILE}[/green]")
 
@@ -65,80 +70,110 @@ def branch_has_upstream(branch, cwd):
     )
     return bool(result)
 
-def get_valid_token(username, email, github_repo_url, project_path):
-    creds = load_credentials()
-    if creds and creds.get("token"):
-        github_token = creds["token"]
-        token_url = github_repo_url.replace("https://", f"https://{github_token}@")
-        run(["git", "remote", "remove", "origin"], cwd=project_path)
-        run(["git", "remote", "add", "origin", token_url], cwd=project_path)
-        return github_token
-    github_token = getpass("GitHub personal access token: ")
-    save_credentials(username, email, github_token)
-    token_url = github_repo_url.replace("https://", f"https://{github_token}@")
-    run(["git", "remote", "remove", "origin"], cwd=project_path)
-    run(["git", "remote", "add", "origin", token_url], cwd=project_path)
-    return github_token
-
-# ==============================
-# Commit inteligente
-# ==============================
-CONVENTIONAL_TYPES = [
-    "feat", "fix", "docs", "style", "refactor", "test", 
-    "chore", "perf", "ci", "build", "revert", "BREAKING CHANGE"
-]
-
 def has_changes(cwd):
     status = run(["git", "status", "--porcelain"], cwd=cwd, capture_output=True)
     return bool(status.strip())
 
-def detect_style_changes(cwd):
-    # Simplificación: si solo cambios de archivos de texto
-    return True if has_changes(cwd) else False
+def remote_exists(cwd):
+    remotes = run(["git", "remote"], cwd=cwd, capture_output=True)
+    return "origin" in remotes
 
-def commit_changes(cwd, first_commit=False):
+def push_branch(cwd):
+    """Push de la rama actual, configurando upstream si es necesario"""
+    if not remote_exists(cwd):
+        console.print("[yellow]⚠ No hay remoto configurado. No se puede hacer push automático[/yellow]")
+        return False
+
+    branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd, capture_output=True)
+    if branch_has_upstream(branch, cwd):
+        run(["git", "push"], cwd=cwd)
+    else:
+        run(["git", "push", "-u", "origin", branch], cwd=cwd)
+    console.print("[green]✔ Push automático realizado[/green]")
+    return True
+
+# ==============================
+# Commit con tipo automático
+# ==============================
+def commit_changes(cwd, first_commit=False, github_repo_url=None, username=None, email=None):
     if not has_changes(cwd):
         console.print("[green]✔ No hay cambios para commitear[/green]")
         return False
+
+    run(["git", "add", "."], cwd=cwd)
+
     if first_commit:
-        run(["git", "add", "."], cwd=cwd)
         run(["git", "commit", "-m", "Initial commit 🚀"], cwd=cwd)
         console.print("[green]✔ Primer commit automático realizado[/green]")
+        if github_repo_url and username and email:
+            get_valid_token(username, email, github_repo_url, cwd)
         return True
-    if detect_style_changes(cwd):
-        if Confirm.ask("Se detectaron solo cambios de estilo. ¿Deseas hacer commit automáticamente?", default=True):
-            run(["git", "add", "."], cwd=cwd)
-            run(["git", "commit", "-m", "style: cambios de estilo"], cwd=cwd)
-            console.print("[green]✔ Commit de estilo realizado[/green]")
-            return True
-    # Si hay cambios funcionales o usuario quiere personalizar
-    run(["git", "add", "."], cwd=cwd)
-    commit_type = Prompt.ask("Tipo de commit", choices=CONVENTIONAL_TYPES, default="feat")
-    message = Prompt.ask("Mensaje de commit", default="Auto commit")
+
+    status_files = run(["git", "diff", "--cached", "--name-only"], cwd=cwd, capture_output=True).splitlines()
+    style_extensions = (".py", ".js", ".css", ".html", ".json", ".md")
+    style_changes = all(file.endswith(style_extensions) for file in status_files)
+
+    if style_changes and Confirm.ask("Solo se detectaron cambios de estilo. ¿Deseas commitear automáticamente?", default=True):
+        run(["git", "commit", "-m", "style: cambios de estilo"], cwd=cwd)
+        console.print("[green]✔ Commit de estilo realizado[/green]")
+        push_branch(cwd)
+        return True
+
+    # Para otros cambios: preguntar tipo y mensaje
+    console.print("[yellow]Se detectaron cambios en el proyecto.[/yellow]")
+    commit_type = Prompt.ask(
+        "Tipo de commit",
+        choices=CONVENTIONAL_TYPES,
+        default="feat"
+    )
+    message = Prompt.ask("Mensaje del commit", default="Auto commit")
     run(["git", "commit", "-m", f"{commit_type}: {message}"], cwd=cwd)
     console.print(f"[green]✔ Commit realizado: {commit_type}: {message}[/green]")
+    push_branch(cwd)
     return True
 
-def push_changes(cwd, github_repo_url, username, email):
-    token = get_valid_token(username, email, github_repo_url, cwd)
-    if branch_has_upstream("main", cwd):
-        run(["git", "push"], cwd=cwd)
-    else:
-        run(["git", "push", "-u", "origin", "main"], cwd=cwd)
+# ==============================
+# Push con token
+# ==============================
+def get_valid_token(username, email, github_repo_url, project_path):
+    creds = load_credentials()
+    github_token = creds.get("token") if creds else None
+
+    while True:
+        if not github_token:
+            github_token = getpass("GitHub personal access token: ")
+            save_credentials(username, email, github_token)
+
+        # CORRECCIÓN: URL válida para Git
+        if github_repo_url.startswith("https://github.com/"):
+            token_url = github_repo_url.replace("https://github.com/", f"https://{github_token}@github.com/")
+        else:
+            console.print("[red]❌ URL del repo inválida[/red]")
+            return
+
+        run(["git", "remote", "remove", "origin"], cwd=project_path)
+        run(["git", "remote", "add", "origin", token_url], cwd=project_path)
+
+        branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=project_path, capture_output=True)
+        if branch_has_upstream(branch, project_path):
+            success = run(["git", "push"], cwd=project_path)
+        else:
+            success = run(["git", "push", "-u", "origin", branch], cwd=project_path)
+
+        if success:
+            console.print("[green]✔ Push realizado correctamente[/green]")
+            return github_token
+        else:
+            console.print("[red]❌ Push falló. Token inválido o sin permisos[/red]")
+            github_token = None
+
 
 # ==============================
-# Configuración inicial
+# Setup Git y proyecto
 # ==============================
-def setup_git(project_path=None, github_repo_url=None):
-    is_new = False
-    if project_path is None:
-        project_path = Path(Prompt.ask("Project path (local)")).resolve()
-    if not (project_path / ".git").exists():
-        is_new = True
-        console.print(Panel(f"[bold]Configurando Git para {project_path}[/bold]", subtitle="Paso 1: Inicializando repo"))
-        run(["git", "init"], cwd=project_path)
-    else:
-        console.print(Panel(f"[bold]Proyecto Git detectado en {project_path}[/bold]", subtitle="Paso 1: Detectando cambios"))
+def setup_git():
+    project_path = Path(Prompt.ask("Project path (local)")).resolve()
+    is_new = not (project_path / ".git").exists()
 
     creds = load_credentials()
     if creds:
@@ -152,11 +187,25 @@ def setup_git(project_path=None, github_repo_url=None):
     run(["git", "config", "--global", "user.name", github_user])
     run(["git", "config", "--global", "user.email", github_email])
 
-    did_commit = commit_changes(project_path, first_commit=is_new)
-    if did_commit and Confirm.ask("¿Deseas hacer push de los cambios ahora?", default=True):
-        if github_repo_url is None:
+    github_repo_url = None
+
+    if is_new:
+        console.print(Panel(f"[bold]Inicializando repositorio en {project_path}[/bold]", subtitle="Primer proyecto"))
+        run(["git", "init"], cwd=project_path)
+        github_repo_url = Prompt.ask("GitHub repo URL (HTTPS) para subir el primer commit")
+        commit_changes(project_path, first_commit=True, github_repo_url=github_repo_url, username=github_user, email=github_email)
+        get_valid_token(github_user, github_email, github_repo_url, project_path)
+    else:
+        console.print(Panel(f"[bold]Proyecto Git detectado en {project_path}[/bold]", subtitle="Detectando cambios"))
+        if Confirm.ask("¿Quieres configurar el remoto?", default=True):
             github_repo_url = Prompt.ask("GitHub repo URL (HTTPS)")
-        push_changes(project_path, github_repo_url, github_user, github_email)
+            if not remote_exists(project_path):
+                run(["git", "remote", "add", "origin", github_repo_url], cwd=project_path)
+
+        if has_changes(project_path) and Confirm.ask("Se detectaron cambios. ¿Deseas hacer commit?", default=True):
+            commit_changes(project_path, github_repo_url=github_repo_url, username=github_user, email=github_email)
+
+    return project_path, github_repo_url, github_user, github_email
 
 # ==============================
 # UI de ramas
@@ -220,11 +269,14 @@ def git_branch_menu(project_path):
 # ==============================
 def main():
     console.print(Panel.fit("[bold green]🚀 Git Auto CLI[/bold green]", subtitle="Automatiza Git desde la terminal"))
-    project_path = Path.cwd()
-    setup_git(project_path)
+    project_path, github_repo_url, github_user, github_email = setup_git()
 
-    if Confirm.ask("¿Deseas gestionar ramas de forma interactiva?", default=True):
-        git_branch_menu(project_path)
+    while True:
+        if Confirm.ask("¿Deseas gestionar ramas de forma interactiva?", default=True):
+            git_branch_menu(project_path)
+        else:
+            console.print("[green]Puedes volver a ejecutar el script para continuar.[/green]")
+            break
 
 if __name__ == "__main__":
     main()
