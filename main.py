@@ -106,18 +106,26 @@ def choose_project():
     projects = load_projects()
 
     if not projects:
+        console.print("[yellow]No hay proyectos guardados[/yellow]")
         return None
 
     console.print("\n[bold cyan]Proyectos guardados:[/bold cyan]")
+
     for i, p in enumerate(projects, 1):
-        console.print(f"{i}. {p}")
+        console.print(f"[green]{i}[/green] → {p}")
 
-    idx = Prompt.ask("Elegir proyecto o ENTER para actual", default="")
+    idx = Prompt.ask(
+        "Elige número o ENTER para usar carpeta actual",
+        default=""
+    )
 
-    if idx.isdigit() and 1 <= int(idx) <= len(projects):
-        return projects[int(idx)-1]
+    if idx.isdigit():
+        idx = int(idx)
+        if 1 <= idx <= len(projects):
+            return Path(projects[idx - 1])
 
-    return None    
+    return None
+
 
 
 # ============================================================
@@ -301,44 +309,50 @@ def setup_git():
         else:
             exit()
 
-    if not (path / ".git").exists():
+    if not git_exists(path):
         run(["git", "init"], cwd=path)
 
+    save_project(path)
     return path
+
 
 # ==============================
 # Main
 # ==============================
 def main():
     console.print(Panel.fit("🚀 Git Auto CLI"))
-    
-    saved = choose_project()
-    project_path = saved if saved else os.getcwd()
-    console.print(f"Proyecto activo: {project_path}\n")
 
-    project = setup_git()
+    # Elegir proyecto guardado
+    project_path = choose_project()
+
+    if project_path is None:
+        console.print("[cyan]Usando carpeta actual o creando nueva[/cyan]")
+        project_path = setup_git()
+    else:
+        console.print(f"[green]Proyecto seleccionado:[/green] {project_path}")
+
     if not git_exists(project_path):
         init_git(project_path)
-    else:
-        save_project(project_path)
-        while True:
-            console.print(Panel.fit(
-                "1 Commit cambios\n"
-                "2 Gestionar ramas\n"
-                "3 Gestionar commits\n"
-                "0 Salir"
-            ))
 
-            opt = Prompt.ask("Opción")
+    while True:
+        console.print(Panel.fit(
+            "1 Commit cambios\n"
+            "2 Gestionar ramas\n"
+            "3 Gestionar commits\n"
+            "0 Salir"
+        ))
 
-            if opt == "1":
-                commit_changes(project)
-            elif opt == "2":
-                git_branch_menu(project)
-            elif opt == "3":
-                git_commit_menu(project)
-            elif opt == "0":
-                break
+        opt = Prompt.ask("Opción")
+
+        if opt == "1":
+            commit_changes(project_path)
+        elif opt == "2":
+            git_branch_menu(project_path)
+        elif opt == "3":
+            git_commit_menu(project_path)
+        elif opt == "0":
+            break
+
 
 if __name__ == "__main__":
     main()
