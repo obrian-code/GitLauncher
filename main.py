@@ -5,7 +5,6 @@ import json
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
 from rich.panel import Panel
-from rich.table import Table
 from rich.tree import Tree
 from rich.markdown import Markdown
 from cryptography.fernet import Fernet
@@ -54,24 +53,49 @@ def run(cmd, cwd=None, capture_output=False):
     console.print(f"[cyan]$ {' '.join(cmd)}[/cyan]")
     result = subprocess.run(cmd, cwd=cwd, text=True, capture_output=capture_output)
     if result.returncode != 0:
-        if capture_output:
+        if capture_output and result.stderr:
             console.print(f"[red]{result.stderr}[/red]")
         console.print(f"[red]❌ Comando falló: {' '.join(cmd)}[/red]")
     return result.stdout if capture_output else result.returncode == 0
 
+def get_valid_token(username, email, github_repo_url, project_path):
+    """Verifica si existe token válido, si falla pide uno nuevo"""
+    creds = load_credentials()
+    token_url = None
+    if creds:
+        github_token = creds["token"]
+        token_url = github_repo_url.replace("https://", f"https://{github_token}@")
+        run(["git", "remote", "remove", "origin"], cwd=project_path)
+        run(["git", "remote", "add", "origin", token_url], cwd=project_path)
+        run(["git", "branch", "-M", "main"], cwd=project_path)
+        success = run(["git", "push", "-u", "origin", "main"], cwd=project_path)
+        if success:
+            return github_token  # token válido
+        else:
+            console.print("[red]❌ Token guardado falló, se requiere uno nuevo[/red]")
+
+    # Si no existe token o falló, pedir uno nuevo
+    github_token = getpass("GitHub personal access token: ")
+    save_credentials(username, email, github_token)
+    token_url = github_repo_url.replace("https://", f"https://{github_token}@")
+    run(["git", "remote", "remove", "origin"], cwd=project_path)
+    run(["git", "remote", "add", "origin", token_url], cwd=project_path)
+    run(["git", "branch", "-M", "main"], cwd=project_path)
+    run(["git", "push", "-u", "origin", "main"], cwd=project_path)
+    return github_token
+
 def setup_git(project_path, github_repo_url):
+    console.print(Panel(f"[bold]Configurando Git para {project_path}[/bold]", subtitle="Paso 1: Configuración global"))
+
     creds = load_credentials()
     if creds:
         github_user = creds["username"]
         github_email = creds["email"]
-        github_token = creds["token"]
     else:
         github_user = Prompt.ask("GitHub username")
         github_email = Prompt.ask("GitHub email")
-        github_token = getpass("GitHub personal access token: ")
-        save_credentials(github_user, github_email, github_token)
+        save_credentials(github_user, github_email, "")
 
-    console.print(Panel(f"[bold]Configurando Git para {project_path}[/bold]", subtitle="Paso 1: Configuración global"))
     run(["git", "config", "--global", "user.name", github_user])
     run(["git", "config", "--global", "user.email", github_email])
 
@@ -82,33 +106,14 @@ def setup_git(project_path, github_repo_url):
     run(["git", "add", "."], cwd=project_path)
     run(["git", "commit", "-m", "Initial commit 🚀"], cwd=project_path)
 
-    # Config remoto con token
-    token_url = github_repo_url.replace("https://", f"https://{github_token}@")
-    remotes = subprocess.run(["git", "remote"], cwd=project_path, capture_output=True, text=True)
-    if "origin" in remotes.stdout:
-        run(["git", "remote", "remove", "origin"], cwd=project_path)
-    run(["git", "remote", "add", "origin", token_url], cwd=project_path)
-
-    run(["git", "branch", "-M", "main"], cwd=project_path)
-
-    # Intentar push y manejar error 403
-    success = run(["git", "push", "-u", "origin", "main"], cwd=project_path)
-    if not success:
-        console.print("[red]❌ Push falló. Posiblemente token inválido o sin permisos.[/red]")
-        if Confirm.ask("¿Deseas actualizar el token y reintentar?"):
-            github_token = getpass("Nuevo GitHub personal access token: ")
-            save_credentials(github_user, github_email, github_token)
-            token_url = github_repo_url.replace("https://", f"https://{github_token}@")
-            run(["git", "remote", "set-url", "origin", token_url], cwd=project_path)
-            run(["git", "push", "-u", "origin", "main"], cwd=project_path)
-
-    console.print(Panel("[green]✅ Repo inicializado y subido a GitHub[/green]", title="¡Listo!"))
+    # Validar token y push
+    token = get_valid_token(github_user, github_email, github_repo_url, project_path)
+    console.print(Panel("[green]✅ Repo inicializado y push completado[/green]", title="¡Listo!"))
 
 # ==============================
 # UI de ramas
 # ==============================
 def show_branch_tree(project_path):
-    """Muestra árbol de ramas con último commit"""
     tree = Tree("[bold cyan]Git Branch Tree[/bold cyan]")
     branches = run(["git", "branch", "--all"], cwd=project_path, capture_output=True).splitlines()
     for branch in branches:
