@@ -49,26 +49,32 @@ def load_credentials():
 # Funciones Git
 # ==============================
 def run(cmd, cwd=None, capture_output=False):
-    """Ejecuta comando Git y muestra salida"""
     console.print(f"[cyan]$ {' '.join(cmd)}[/cyan]")
     result = subprocess.run(cmd, cwd=cwd, text=True, capture_output=capture_output)
     if result.returncode != 0:
         if capture_output and result.stderr:
             console.print(f"[red]{result.stderr}[/red]")
         console.print(f"[red]❌ Comando falló: {' '.join(cmd)}[/red]")
-    return result.stdout if capture_output else result.returncode == 0
+    return result.stdout.strip() if capture_output else result.returncode == 0
+
+def branch_has_upstream(branch, cwd):
+    """Verifica si la rama local tiene upstream remoto"""
+    result = run(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", f"{branch}@{{u}}"], cwd=cwd, capture_output=True)
+    return bool(result)
 
 def get_valid_token(username, email, github_repo_url, project_path):
-    """Verifica si existe token válido, si falla pide uno nuevo"""
+    """Verifica si existe token válido; si falla pide uno nuevo"""
     creds = load_credentials()
-    token_url = None
-    if creds:
+    if creds and creds.get("token"):
         github_token = creds["token"]
         token_url = github_repo_url.replace("https://", f"https://{github_token}@")
         run(["git", "remote", "remove", "origin"], cwd=project_path)
         run(["git", "remote", "add", "origin", token_url], cwd=project_path)
-        run(["git", "branch", "-M", "main"], cwd=project_path)
-        success = run(["git", "push", "-u", "origin", "main"], cwd=project_path)
+        # Detectar si main tiene upstream
+        if branch_has_upstream("main", cwd=project_path):
+            success = run(["git", "push"], cwd=project_path)
+        else:
+            success = run(["git", "push", "-u", "origin", "main"], cwd=project_path)
         if success:
             return github_token  # token válido
         else:
@@ -80,8 +86,10 @@ def get_valid_token(username, email, github_repo_url, project_path):
     token_url = github_repo_url.replace("https://", f"https://{github_token}@")
     run(["git", "remote", "remove", "origin"], cwd=project_path)
     run(["git", "remote", "add", "origin", token_url], cwd=project_path)
-    run(["git", "branch", "-M", "main"], cwd=project_path)
-    run(["git", "push", "-u", "origin", "main"], cwd=project_path)
+    if branch_has_upstream("main", cwd=project_path):
+        run(["git", "push"], cwd=project_path)
+    else:
+        run(["git", "push", "-u", "origin", "main"], cwd=project_path)
     return github_token
 
 def setup_git(project_path, github_repo_url):
@@ -106,7 +114,7 @@ def setup_git(project_path, github_repo_url):
     run(["git", "add", "."], cwd=project_path)
     run(["git", "commit", "-m", "Initial commit 🚀"], cwd=project_path)
 
-    # Validar token y push
+    # Validar token y hacer push
     token = get_valid_token(github_user, github_email, github_repo_url, project_path)
     console.print(Panel("[green]✅ Repo inicializado y push completado[/green]", title="¡Listo!"))
 
