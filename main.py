@@ -50,14 +50,13 @@ def load_credentials():
 # Funciones Git
 # ==============================
 def run(cmd, cwd=None, capture_output=False):
-    """Ejecuta comando Git y lo muestra"""
+    """Ejecuta comando Git y muestra salida"""
     console.print(f"[cyan]$ {' '.join(cmd)}[/cyan]")
-    result = subprocess.run(cmd, cwd=cwd, text=True,
-                            capture_output=capture_output)
+    result = subprocess.run(cmd, cwd=cwd, text=True, capture_output=capture_output)
     if result.returncode != 0:
-        console.print(f"[red]❌ Comando falló: {' '.join(cmd)}[/red]")
         if capture_output:
-            console.print(result.stderr)
+            console.print(f"[red]{result.stderr}[/red]")
+        console.print(f"[red]❌ Comando falló: {' '.join(cmd)}[/red]")
     return result.stdout if capture_output else result.returncode == 0
 
 def setup_git(project_path, github_repo_url):
@@ -72,9 +71,7 @@ def setup_git(project_path, github_repo_url):
         github_token = getpass("GitHub personal access token: ")
         save_credentials(github_user, github_email, github_token)
 
-    console.print(Panel(f"[bold]Configurando Git para {project_path}[/bold]",
-                        subtitle="Paso 1: Configuración global"))
-
+    console.print(Panel(f"[bold]Configurando Git para {project_path}[/bold]", subtitle="Paso 1: Configuración global"))
     run(["git", "config", "--global", "user.name", github_user])
     run(["git", "config", "--global", "user.email", github_email])
 
@@ -87,35 +84,41 @@ def setup_git(project_path, github_repo_url):
 
     # Config remoto con token
     token_url = github_repo_url.replace("https://", f"https://{github_token}@")
-    remotes = subprocess.run(["git", "remote"], cwd=project_path,
-                             capture_output=True, text=True)
+    remotes = subprocess.run(["git", "remote"], cwd=project_path, capture_output=True, text=True)
     if "origin" in remotes.stdout:
         run(["git", "remote", "remove", "origin"], cwd=project_path)
     run(["git", "remote", "add", "origin", token_url], cwd=project_path)
 
     run(["git", "branch", "-M", "main"], cwd=project_path)
-    run(["git", "push", "-u", "origin", "main"], cwd=project_path)
 
-    console.print(Panel("[green]✅ Repo inicializado y subido a GitHub[/green]",
-                        title="¡Listo!"))
+    # Intentar push y manejar error 403
+    success = run(["git", "push", "-u", "origin", "main"], cwd=project_path)
+    if not success:
+        console.print("[red]❌ Push falló. Posiblemente token inválido o sin permisos.[/red]")
+        if Confirm.ask("¿Deseas actualizar el token y reintentar?"):
+            github_token = getpass("Nuevo GitHub personal access token: ")
+            save_credentials(github_user, github_email, github_token)
+            token_url = github_repo_url.replace("https://", f"https://{github_token}@")
+            run(["git", "remote", "set-url", "origin", token_url], cwd=project_path)
+            run(["git", "push", "-u", "origin", "main"], cwd=project_path)
+
+    console.print(Panel("[green]✅ Repo inicializado y subido a GitHub[/green]", title="¡Listo!"))
 
 # ==============================
-# Funciones de UI
+# UI de ramas
 # ==============================
 def show_branch_tree(project_path):
-    """Muestra un árbol de ramas y commits"""
+    """Muestra árbol de ramas con último commit"""
     tree = Tree("[bold cyan]Git Branch Tree[/bold cyan]")
     branches = run(["git", "branch", "--all"], cwd=project_path, capture_output=True).splitlines()
     for branch in branches:
         branch_name = branch.strip().replace("* ", "")
-        commit = run(["git", "log", "-1", "--pretty=format:%h %s", branch_name],
-                     cwd=project_path, capture_output=True)
+        commit = run(["git", "log", "-1", "--pretty=format:%h %s", branch_name], cwd=project_path, capture_output=True)
         tree.add(f"[yellow]{branch_name}[/yellow]: {commit}")
     console.print(tree)
 
 def show_commit_log(project_path):
-    log = run(["git", "log", "--oneline", "--graph", "--all"], cwd=project_path,
-              capture_output=True)
+    log = run(["git", "log", "--oneline", "--graph", "--all"], cwd=project_path, capture_output=True)
     console.print(Panel(Markdown(f"```git\n{log}\n```"), title="Commit Log"))
 
 def git_branch_menu(project_path):
@@ -163,14 +166,13 @@ def git_branch_menu(project_path):
 # Menú principal
 # ==============================
 def main():
-    console.print(Panel.fit("[bold green]🚀 Git Auto CLI[/bold green]",
-                            subtitle="Automatiza Git desde la terminal"))
+    console.print(Panel.fit("[bold green]🚀 Git Auto CLI[/bold green]", subtitle="Automatiza Git desde la terminal"))
     project_path = Path(Prompt.ask("Project path (local)")).resolve()
     github_repo_url = Prompt.ask("GitHub repo URL (HTTPS)")
 
     setup_git(project_path, github_repo_url)
 
-    if Confirm.ask("Do you want to manage branches interactively?", default=True):
+    if Confirm.ask("¿Deseas gestionar ramas de forma interactiva?", default=True):
         git_branch_menu(project_path)
 
 if __name__ == "__main__":
