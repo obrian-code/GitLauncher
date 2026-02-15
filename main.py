@@ -72,23 +72,12 @@ def get_valid_token(username, email, github_repo_url, project_path):
         token_url = github_repo_url.replace("https://", f"https://{github_token}@")
         run(["git", "remote", "remove", "origin"], cwd=project_path)
         run(["git", "remote", "add", "origin", token_url], cwd=project_path)
-        if branch_has_upstream("main", cwd=project_path):
-            success = run(["git", "push"], cwd=project_path)
-        else:
-            success = run(["git", "push", "-u", "origin", "main"], cwd=project_path)
-        if success:
-            return github_token
-        console.print("[red]❌ Token guardado falló, se requiere uno nuevo[/red]")
-
+        return github_token
     github_token = getpass("GitHub personal access token: ")
     save_credentials(username, email, github_token)
     token_url = github_repo_url.replace("https://", f"https://{github_token}@")
     run(["git", "remote", "remove", "origin"], cwd=project_path)
     run(["git", "remote", "add", "origin", token_url], cwd=project_path)
-    if branch_has_upstream("main", cwd=project_path):
-        run(["git", "push"], cwd=project_path)
-    else:
-        run(["git", "push", "-u", "origin", "main"], cwd=project_path)
     return github_token
 
 # ==============================
@@ -109,34 +98,43 @@ def detect_style_changes(cwd):
 
 def commit_changes(cwd, first_commit=False):
     if not has_changes(cwd):
-        return
+        console.print("[green]✔ No hay cambios para commitear[/green]")
+        return False
     if first_commit:
         run(["git", "add", "."], cwd=cwd)
         run(["git", "commit", "-m", "Initial commit 🚀"], cwd=cwd)
         console.print("[green]✔ Primer commit automático realizado[/green]")
-        return
+        return True
     if detect_style_changes(cwd):
-        run(["git", "add", "."], cwd=cwd)
-        run(["git", "commit", "-m", "style: cambios de estilo"], cwd=cwd)
-        console.print("[green]✔ Commit de estilo realizado[/green]")
-        return
+        if Confirm.ask("Se detectaron solo cambios de estilo. ¿Deseas hacer commit automáticamente?", default=True):
+            run(["git", "add", "."], cwd=cwd)
+            run(["git", "commit", "-m", "style: cambios de estilo"], cwd=cwd)
+            console.print("[green]✔ Commit de estilo realizado[/green]")
+            return True
+    # Si hay cambios funcionales o usuario quiere personalizar
     run(["git", "add", "."], cwd=cwd)
-    commit_type = Prompt.ask(
-        "Tipo de commit", choices=CONVENTIONAL_TYPES, default="feat"
-    )
+    commit_type = Prompt.ask("Tipo de commit", choices=CONVENTIONAL_TYPES, default="feat")
     message = Prompt.ask("Mensaje de commit", default="Auto commit")
     run(["git", "commit", "-m", f"{commit_type}: {message}"], cwd=cwd)
     console.print(f"[green]✔ Commit realizado: {commit_type}: {message}[/green]")
+    return True
+
+def push_changes(cwd, github_repo_url, username, email):
+    token = get_valid_token(username, email, github_repo_url, cwd)
+    if branch_has_upstream("main", cwd):
+        run(["git", "push"], cwd=cwd)
+    else:
+        run(["git", "push", "-u", "origin", "main"], cwd=cwd)
 
 # ==============================
 # Configuración inicial
 # ==============================
 def setup_git(project_path=None, github_repo_url=None):
+    is_new = False
     if project_path is None:
         project_path = Path(Prompt.ask("Project path (local)")).resolve()
-    is_new = not (project_path / ".git").exists()
-
-    if is_new:
+    if not (project_path / ".git").exists():
+        is_new = True
         console.print(Panel(f"[bold]Configurando Git para {project_path}[/bold]", subtitle="Paso 1: Inicializando repo"))
         run(["git", "init"], cwd=project_path)
     else:
@@ -154,12 +152,11 @@ def setup_git(project_path=None, github_repo_url=None):
     run(["git", "config", "--global", "user.name", github_user])
     run(["git", "config", "--global", "user.email", github_email])
 
-    commit_changes(project_path, first_commit=is_new)
-
-    if is_new:
+    did_commit = commit_changes(project_path, first_commit=is_new)
+    if did_commit and Confirm.ask("¿Deseas hacer push de los cambios ahora?", default=True):
         if github_repo_url is None:
             github_repo_url = Prompt.ask("GitHub repo URL (HTTPS)")
-        get_valid_token(github_user, github_email, github_repo_url, project_path)
+        push_changes(project_path, github_repo_url, github_user, github_email)
 
 # ==============================
 # UI de ramas
@@ -223,10 +220,7 @@ def git_branch_menu(project_path):
 # ==============================
 def main():
     console.print(Panel.fit("[bold green]🚀 Git Auto CLI[/bold green]", subtitle="Automatiza Git desde la terminal"))
-    # Detecta si hay repo en cwd
     project_path = Path.cwd()
-    if not (project_path / ".git").exists():
-        project_path = Path(Prompt.ask("Project path (local)")).resolve()
     setup_git(project_path)
 
     if Confirm.ask("¿Deseas gestionar ramas de forma interactiva?", default=True):
