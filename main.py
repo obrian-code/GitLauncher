@@ -268,7 +268,7 @@ def git_branch_menu(project_path):
 # Menú principal
 # ==============================
 def main():
-    console.print(Panel.fit("[bold green]🚀 Git Auto CLI[/bold green]", subtitle="Automatiza Git desde la terminal"))
+    console.print(Panel.fit("[bold green]🚀 Git Auto CLI[/bold green]", subtitle="-- Automatiza Git desde la terminal --"))
     project_path, github_repo_url, github_user, github_email = setup_git()
 
     while True:
