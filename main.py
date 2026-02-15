@@ -2,6 +2,7 @@ from pathlib import Path
 import subprocess
 from getpass import getpass
 import json
+import os
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
 from rich.panel import Panel
@@ -13,6 +14,8 @@ console = Console()
 
 CRED_FILE = Path.home() / ".git_auto_cli.json"
 KEY_FILE = Path.home() / ".git_auto_cli.key"
+
+PROJECTS_FILE = Path.home() / ".git_helper_projects.json"
 
 CONVENTIONAL_TYPES = [
     "feat", "fix", "docs", "style", "refactor", "test",
@@ -77,6 +80,67 @@ def push_branch(cwd):
         return
     branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd, capture_output=True)
     run(["git", "push", "-u", "origin", branch], cwd=cwd)
+
+# ============================================================
+# GUARDAR Y CARGAR PROYECTOS
+# ============================================================
+
+def load_projects():
+    if PROJECTS_FILE.exists():
+        return json.loads(PROJECTS_FILE.read_text())
+    return []
+
+def git_exists(path):
+    return os.path.exists(os.path.join(path, ".git"))
+
+def save_project(path):
+    projects = load_projects()
+    path_str = str(Path(path).resolve())
+
+    if path_str not in projects:
+        projects.append(path_str)
+        PROJECTS_FILE.write_text(json.dumps(projects, indent=2))
+
+
+def choose_project():
+    projects = load_projects()
+
+    if not projects:
+        return None
+
+    console.print("\n[bold cyan]Proyectos guardados:[/bold cyan]")
+    for i, p in enumerate(projects, 1):
+        console.print(f"{i}. {p}")
+
+    idx = Prompt.ask("Elegir proyecto o ENTER para actual", default="")
+
+    if idx.isdigit() and 1 <= int(idx) <= len(projects):
+        return projects[int(idx)-1]
+
+    return None    
+
+
+# ============================================================
+# INICIALIZAR PROYECTO
+# ============================================================
+
+def init_git(project_path):
+    console.print("Inicializando Git...")
+    run(["git", "init"], cwd=project_path)
+
+    url = Prompt.ask("URL repo remoto (opcional)", default="")
+    if url:
+        run(["git", "remote", "add", "origin", url], cwd=project_path)
+
+    run(["git", "add", "."], cwd=project_path)
+    run(["git", "commit", "-m", "commit inicial"], cwd=project_path)
+
+    if url:
+        push = Prompt.ask("¿Hacer push inicial?", choices=["s","n"], default="s")
+        if push == "s":
+            run(["git", "push", "-u", "origin", "main"], cwd=project_path)
+
+    save_project(project_path)
 
 # ==============================
 # Commit automático
@@ -162,7 +226,7 @@ def show_diff_visual(project_path):
 def search_commit_by_file(project_path):
     file = Prompt.ask("Nombre archivo")
     run(["git", "log", "--oneline", "--", file], cwd=project_path)
-    
+
 # ============================================================
 # MENU COMMITS
 # ============================================================
@@ -247,27 +311,34 @@ def setup_git():
 # ==============================
 def main():
     console.print(Panel.fit("🚀 Git Auto CLI"))
+    
+    saved = choose_project()
+    project_path = saved if saved else os.getcwd()
+    console.print(f"Proyecto activo: {project_path}\n")
 
     project = setup_git()
+    if not git_exists(project_path):
+        init_git(project_path)
+    else:
+        save_project(project_path)
+        while True:
+            console.print(Panel.fit(
+                "1 Commit cambios\n"
+                "2 Gestionar ramas\n"
+                "3 Gestionar commits\n"
+                "0 Salir"
+            ))
 
-    while True:
-        console.print(Panel.fit(
-            "1 Commit cambios\n"
-            "2 Gestionar ramas\n"
-            "3 Gestionar commits\n"
-            "0 Salir"
-        ))
+            opt = Prompt.ask("Opción")
 
-        opt = Prompt.ask("Opción")
-
-        if opt == "1":
-            commit_changes(project)
-        elif opt == "2":
-            git_branch_menu(project)
-        elif opt == "3":
-            git_commit_menu(project)
-        elif opt == "0":
-            break
+            if opt == "1":
+                commit_changes(project)
+            elif opt == "2":
+                git_branch_menu(project)
+            elif opt == "3":
+                git_commit_menu(project)
+            elif opt == "0":
+                break
 
 if __name__ == "__main__":
     main()
