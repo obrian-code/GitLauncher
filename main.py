@@ -10,6 +10,7 @@ from rich.markdown import Markdown
 from cryptography.fernet import Fernet
 
 console = Console()
+
 CRED_FILE = Path.home() / ".git_auto_cli.json"
 KEY_FILE = Path.home() / ".git_auto_cli.key"
 
@@ -19,7 +20,7 @@ CONVENTIONAL_TYPES = [
 ]
 
 # ==============================
-# Manejo de credenciales cifradas
+# Credenciales cifradas
 # ==============================
 def load_key():
     if KEY_FILE.exists():
@@ -29,19 +30,20 @@ def load_key():
     return key
 
 def encrypt_token(token):
-    key = load_key()
-    f = Fernet(key)
+    f = Fernet(load_key())
     return f.encrypt(token.encode()).decode()
 
-def decrypt_token(enc_token):
-    key = load_key()
-    f = Fernet(key)
-    return f.decrypt(enc_token.encode()).decode()
+def decrypt_token(enc):
+    f = Fernet(load_key())
+    return f.decrypt(enc.encode()).decode()
 
 def save_credentials(username, email, token):
-    data = {"username": username, "email": email, "token": encrypt_token(token) if token else ""}
+    data = {
+        "username": username,
+        "email": email,
+        "token": encrypt_token(token) if token else ""
+    }
     CRED_FILE.write_text(json.dumps(data))
-    console.print(f"[green]✔ Credenciales guardadas en {CRED_FILE}[/green]")
 
 def load_credentials():
     if CRED_FILE.exists():
@@ -52,230 +54,176 @@ def load_credentials():
     return None
 
 # ==============================
-# Funciones Git
+# Git helpers
 # ==============================
 def run(cmd, cwd=None, capture_output=False):
     console.print(f"[cyan]$ {' '.join(cmd)}[/cyan]")
     result = subprocess.run(cmd, cwd=cwd, text=True, capture_output=capture_output)
     if result.returncode != 0:
-        if capture_output and result.stderr:
+        if result.stderr:
             console.print(f"[red]{result.stderr}[/red]")
-        console.print(f"[red]❌ Comando falló: {' '.join(cmd)}[/red]")
     return result.stdout.strip() if capture_output else result.returncode == 0
 
-def branch_has_upstream(branch, cwd):
-    result = run(
-        ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", f"{branch}@{{u}}"],
-        cwd=cwd, capture_output=True
-    )
-    return bool(result)
-
 def has_changes(cwd):
-    status = run(["git", "status", "--porcelain"], cwd=cwd, capture_output=True)
-    return bool(status.strip())
+    return bool(run(["git", "status", "--porcelain"], cwd=cwd, capture_output=True))
 
 def remote_exists(cwd):
     remotes = run(["git", "remote"], cwd=cwd, capture_output=True)
     return "origin" in remotes
 
 def push_branch(cwd):
-    """Push de la rama actual, configurando upstream si es necesario"""
     if not remote_exists(cwd):
-        console.print("[yellow]⚠ No hay remoto configurado. No se puede hacer push automático[/yellow]")
-        return False
-
+        console.print("[yellow]No hay remoto configurado[/yellow]")
+        return
     branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd, capture_output=True)
-    if branch_has_upstream(branch, cwd):
-        run(["git", "push"], cwd=cwd)
-    else:
-        run(["git", "push", "-u", "origin", branch], cwd=cwd)
-    console.print("[green]✔ Push automático realizado[/green]")
-    return True
+    run(["git", "push", "-u", "origin", branch], cwd=cwd)
 
 # ==============================
-# Commit con tipo automático
+# Commit automático
 # ==============================
-def commit_changes(cwd, first_commit=False, github_repo_url=None, username=None, email=None):
+def commit_changes(cwd):
     if not has_changes(cwd):
-        console.print("[green]✔ No hay cambios para commitear[/green]")
-        return False
+        console.print("[green]No hay cambios[/green]")
+        return
 
     run(["git", "add", "."], cwd=cwd)
 
-    if first_commit:
-        run(["git", "commit", "-m", "Initial commit 🚀"], cwd=cwd)
-        console.print("[green]✔ Primer commit automático realizado[/green]")
-        if github_repo_url and username and email:
-            get_valid_token(username, email, github_repo_url, cwd)
-        return True
+    commit_type = Prompt.ask("Tipo commit", choices=CONVENTIONAL_TYPES, default="feat")
+    msg = Prompt.ask("Mensaje", default="Auto commit")
 
-    status_files = run(["git", "diff", "--cached", "--name-only"], cwd=cwd, capture_output=True).splitlines()
-    style_extensions = (".py", ".js", ".css", ".html", ".json", ".md")
-    style_changes = all(file.endswith(style_extensions) for file in status_files)
+    run(["git", "commit", "-m", f"{commit_type}: {msg}"], cwd=cwd)
 
-    if style_changes and Confirm.ask("Solo se detectaron cambios de estilo. ¿Deseas commitear automáticamente?", default=True):
-        run(["git", "commit", "-m", "style: cambios de estilo"], cwd=cwd)
-        console.print("[green]✔ Commit de estilo realizado[/green]")
+    if Confirm.ask("¿Hacer push?", default=True):
         push_branch(cwd)
-        return True
 
-    # Para otros cambios: preguntar tipo y mensaje
-    console.print("[yellow]Se detectaron cambios en el proyecto.[/yellow]")
-    commit_type = Prompt.ask(
-        "Tipo de commit",
-        choices=CONVENTIONAL_TYPES,
-        default="feat"
+# ==============================
+# Gestión avanzada de commits
+# ==============================
+def list_commits(project_path):
+    log = run(
+        ["git", "log", "--oneline", "--graph", "--decorate", "-20"],
+        cwd=project_path,
+        capture_output=True
     )
-    message = Prompt.ask("Mensaje del commit", default="Auto commit")
-    run(["git", "commit", "-m", f"{commit_type}: {message}"], cwd=cwd)
-    console.print(f"[green]✔ Commit realizado: {commit_type}: {message}[/green]")
-    push_branch(cwd)
-    return True
+    console.print(Panel(log or "No commits", title="Commits recientes"))
 
-# ==============================
-# Push con token
-# ==============================
-def get_valid_token(username, email, github_repo_url, project_path):
-    creds = load_credentials()
-    github_token = creds.get("token") if creds else None
+def delete_last_commit(project_path):
+    console.print("1 Soft  2 Mixed  3 Hard")
+    opt = Prompt.ask("Modo", choices=["1","2","3"])
 
+    if opt == "1":
+        run(["git", "reset", "--soft", "HEAD~1"], cwd=project_path)
+    elif opt == "2":
+        run(["git", "reset", "--mixed", "HEAD~1"], cwd=project_path)
+    else:
+        if Confirm.ask("⚠ Borrar cambios?", default=False):
+            run(["git", "reset", "--hard", "HEAD~1"], cwd=project_path)
+
+def delete_specific_commit(project_path):
+    commit = Prompt.ask("Hash commit")
+
+    console.print("1 Revert seguro")
+    console.print("2 Rebase interactivo")
+    opt = Prompt.ask("Modo", choices=["1","2"])
+
+    if opt == "1":
+        run(["git", "revert", commit], cwd=project_path)
+    else:
+        run(["git", "rebase", "-i", f"{commit}^"], cwd=project_path)
+
+def git_commit_menu(project_path):
     while True:
-        if not github_token:
-            github_token = getpass("GitHub personal access token: ")
-            save_credentials(username, email, github_token)
+        console.print(Panel.fit(
+            "1 List commits\n"
+            "2 Eliminar último commit\n"
+            "3 Eliminar commit específico\n"
+            "0 Volver"
+        ))
+        c = Prompt.ask("Opción")
 
-        # CORRECCIÓN: URL válida para Git
-        if github_repo_url.startswith("https://github.com/"):
-            token_url = github_repo_url.replace("https://github.com/", f"https://{github_token}@github.com/")
-        else:
-            console.print("[red]❌ URL del repo inválida[/red]")
-            return
-
-        run(["git", "remote", "remove", "origin"], cwd=project_path)
-        run(["git", "remote", "add", "origin", token_url], cwd=project_path)
-
-        branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=project_path, capture_output=True)
-        if branch_has_upstream(branch, project_path):
-            success = run(["git", "push"], cwd=project_path)
-        else:
-            success = run(["git", "push", "-u", "origin", branch], cwd=project_path)
-
-        if success:
-            console.print("[green]✔ Push realizado correctamente[/green]")
-            return github_token
-        else:
-            console.print("[red]❌ Push falló. Token inválido o sin permisos[/red]")
-            github_token = None
-
+        if c == "1":
+            list_commits(project_path)
+        elif c == "2":
+            delete_last_commit(project_path)
+        elif c == "3":
+            delete_specific_commit(project_path)
+        elif c == "0":
+            break
 
 # ==============================
-# Setup Git y proyecto
+# Branch menu
 # ==============================
-def setup_git():
-    project_path = Path(Prompt.ask("Project path (local)")).resolve()
-    is_new = not (project_path / ".git").exists()
-
-    creds = load_credentials()
-    if creds:
-        github_user = creds["username"]
-        github_email = creds["email"]
-    else:
-        github_user = Prompt.ask("GitHub username")
-        github_email = Prompt.ask("GitHub email")
-        save_credentials(github_user, github_email, "")
-
-    run(["git", "config", "--global", "user.name", github_user])
-    run(["git", "config", "--global", "user.email", github_email])
-
-    github_repo_url = None
-
-    if is_new:
-        console.print(Panel(f"[bold]Inicializando repositorio en {project_path}[/bold]", subtitle="Primer proyecto"))
-        run(["git", "init"], cwd=project_path)
-        github_repo_url = Prompt.ask("GitHub repo URL (HTTPS) para subir el primer commit")
-        commit_changes(project_path, first_commit=True, github_repo_url=github_repo_url, username=github_user, email=github_email)
-        get_valid_token(github_user, github_email, github_repo_url, project_path)
-    else:
-        console.print(Panel(f"[bold]Proyecto Git detectado en {project_path}[/bold]", subtitle="Detectando cambios"))
-        if Confirm.ask("¿Quieres configurar el remoto?", default=True):
-            github_repo_url = Prompt.ask("GitHub repo URL (HTTPS)")
-            if not remote_exists(project_path):
-                run(["git", "remote", "add", "origin", github_repo_url], cwd=project_path)
-
-        if has_changes(project_path) and Confirm.ask("Se detectaron cambios. ¿Deseas hacer commit?", default=True):
-            commit_changes(project_path, github_repo_url=github_repo_url, username=github_user, email=github_email)
-
-    return project_path, github_repo_url, github_user, github_email
-
-# ==============================
-# UI de ramas
-# ==============================
-def show_branch_tree(project_path):
-    tree = Tree("[bold cyan]Git Branch Tree[/bold cyan]")
-    branches = run(["git", "branch", "--all"], cwd=project_path, capture_output=True).splitlines()
-    for branch in branches:
-        branch_name = branch.strip().replace("* ", "")
-        commit = run(["git", "log", "-1", "--pretty=format:%h %s", branch_name], cwd=project_path, capture_output=True)
-        tree.add(f"[yellow]{branch_name}[/yellow]: {commit}")
-    console.print(tree)
-
-def show_commit_log(project_path):
-    log = run(["git", "log", "--oneline", "--graph", "--all"], cwd=project_path, capture_output=True)
-    console.print(Panel(Markdown(f"```git\n{log}\n```"), title="Commit Log"))
-
 def git_branch_menu(project_path):
     while True:
         console.print(Panel.fit(
-            "[bold yellow]Git Branch Manager[/bold yellow]\n"
-            "1. List branches\n"
-            "2. Create branch\n"
-            "3. Checkout branch\n"
-            "4. Merge branch\n"
-            "5. Delete branch\n"
-            "6. Revert commit\n"
-            "7. Show commit tree\n"
-            "8. Show log\n"
-            "0. Exit"
+            "1 List branches\n"
+            "2 Create branch\n"
+            "3 Checkout\n"
+            "4 Merge\n"
+            "5 Delete branch\n"
+            "0 Volver"
         ))
-        choice = Prompt.ask("Select option")
-        if choice == "1":
-            show_branch_tree(project_path)
-        elif choice == "2":
-            name = Prompt.ask("Branch name")
+        c = Prompt.ask("Opción")
+
+        if c == "1":
+            run(["git", "branch", "--all"], cwd=project_path)
+        elif c == "2":
+            name = Prompt.ask("Nombre")
             run(["git", "branch", name], cwd=project_path)
-        elif choice == "3":
-            name = Prompt.ask("Branch to checkout")
+        elif c == "3":
+            name = Prompt.ask("Branch")
             run(["git", "checkout", name], cwd=project_path)
-        elif choice == "4":
-            name = Prompt.ask("Branch to merge into current")
+        elif c == "4":
+            name = Prompt.ask("Merge branch")
             run(["git", "merge", name], cwd=project_path)
-        elif choice == "5":
-            name = Prompt.ask("Branch to delete")
+        elif c == "5":
+            name = Prompt.ask("Delete branch")
             run(["git", "branch", "-d", name], cwd=project_path)
-        elif choice == "6":
-            commit = Prompt.ask("Commit hash to revert")
-            run(["git", "revert", commit], cwd=project_path)
-        elif choice == "7":
-            show_branch_tree(project_path)
-        elif choice == "8":
-            show_commit_log(project_path)
-        elif choice == "0":
+        elif c == "0":
             break
-        else:
-            console.print("[red]Invalid option[/red]")
 
 # ==============================
-# Menú principal
+# Setup proyecto
+# ==============================
+def setup_git():
+    path = Path(Prompt.ask("Project path")).expanduser()
+
+    if not path.exists():
+        if Confirm.ask("Crear carpeta?", default=True):
+            path.mkdir(parents=True)
+        else:
+            exit()
+
+    if not (path / ".git").exists():
+        run(["git", "init"], cwd=path)
+
+    return path
+
+# ==============================
+# Main
 # ==============================
 def main():
-    console.print(Panel.fit("[bold green]🚀 Git Auto CLI[/bold green]", subtitle="-- Automatiza Git desde la terminal --"))
-    project_path, github_repo_url, github_user, github_email = setup_git()
+    console.print(Panel.fit("🚀 Git Auto CLI"))
+
+    project = setup_git()
 
     while True:
-        if Confirm.ask("¿Deseas gestionar ramas de forma interactiva?", default=True):
-            git_branch_menu(project_path)
-        else:
-            console.print("[green]Puedes volver a ejecutar el script para continuar.[/green]")
+        console.print(Panel.fit(
+            "1 Commit cambios\n"
+            "2 Gestionar ramas\n"
+            "3 Gestionar commits\n"
+            "0 Salir"
+        ))
+
+        opt = Prompt.ask("Opción")
+
+        if opt == "1":
+            commit_changes(project)
+        elif opt == "2":
+            git_branch_menu(project)
+        elif opt == "3":
+            git_commit_menu(project)
+        elif opt == "0":
             break
 
 if __name__ == "__main__":
